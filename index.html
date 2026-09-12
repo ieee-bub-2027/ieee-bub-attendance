@@ -3,33 +3,78 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>تسجيل الحضور — IEEE BUB</title>
+  <title>IEEE BUB — Attendance Check-in</title>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; direction: rtl; max-width: 480px; margin: 20px auto; padding: 0 12px; color: #0A2036; }
-    h2 { text-align: center; }
-    label { display: block; margin-top: 12px; font-weight: bold; }
-    input, select { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; font-size: 16px; }
-    button { width: 100%; padding: 12px; margin-top: 16px; font-size: 16px; background: #0A2036; color: #fff; border: none; border-radius: 6px; }
+    /* English UI for now. Every user-facing string lives in the LABELS object
+       below, so a future Arabic/English toggle just needs to swap that object
+       and re-render — no HTML restructuring needed. */
+    body { font-family: Arial, sans-serif; direction: ltr; max-width: 480px; margin: 20px auto; padding: 0 12px; color: #0A2036; }
+    h2 { text-align: center; margin-bottom: 4px; }
+    .subtitle { text-align: center; color: #666; font-size: 13px; margin-bottom: 18px; }
+    label { display: block; margin-top: 12px; font-weight: bold; font-size: 14px; }
+    input, select { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; font-size: 16px; border: 1px solid #ccc; border-radius: 6px; }
+    button { width: 100%; padding: 12px; margin-top: 16px; font-size: 16px; background: #0A2036; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    button.secondary { background: #fff; color: #0A2036; border: 1px solid #0A2036; margin-top: 8px; }
     #reader { width: 100%; margin-top: 16px; }
     #result { margin-top: 14px; padding: 10px; border-radius: 6px; font-weight: bold; text-align: center; display: none; }
     .ok { background: #DFF5E1; color: #1B6E2E; }
     .err { background: #FBE1E1; color: #A32020; }
+    .badge-row { margin-top: 12px; font-size: 13px; color: #0A2036; background: #EAF1FB; border-radius: 6px; padding: 10px 12px; }
+    .badge-row div { margin: 2px 0; }
+    .step-dots { display: flex; justify-content: center; gap: 6px; margin-bottom: 14px; }
+    .step-dots span { width: 8px; height: 8px; border-radius: 50%; background: #ccc; }
+    .step-dots span.active { background: #0A2036; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .scanned-card { margin-top: 12px; padding: 14px; border-radius: 8px; background: #fff; border: 2px solid #1B6E2E; text-align: center; }
+    .scanned-card .name { font-size: 18px; font-weight: bold; color: #0A2036; }
+    .scanned-card .meta { font-size: 13px; color: #555; margin-top: 4px; }
   </style>
 </head>
 <body>
-  <h2>تسجيل الحضور</h2>
+  <h2>IEEE BUB Attendance</h2>
+  <div class="subtitle" id="subtitle-text">Step 1 of 3 — Committee &amp; Password</div>
+  <div class="step-dots">
+    <span id="dot-1" class="active"></span><span id="dot-2"></span><span id="dot-3"></span>
+  </div>
 
-  <label>اللجنة</label>
-  <select id="committee"></select>
+  <!-- ===================== PAGE 1 — Committee + Password ===================== -->
+  <div id="page-login" class="page active">
+    <label>Committee</label>
+    <select id="committee"></select>
 
-  <label>الباسورد الخاص باللجنة</label>
-  <input id="password" type="text" placeholder="6 أرقام">
+    <label>Committee Password</label>
+    <input id="password" type="text" placeholder="6-digit password">
 
-  <button onclick="startScan()">ابدأ المسح</button>
-  <div id="session-badge" style="display:none; margin-top:10px; text-align:center; font-size:13px; color:#0A2036;">الجلسة: <b id="session-id-label"></b></div>
-  <div id="reader"></div>
-  <div id="result"></div>
+    <button onclick="goPage1Next()">Next</button>
+  </div>
+
+  <!-- ===================== PAGE 2 — HR Operator Details ===================== -->
+  <div id="page-hr" class="page">
+    <div class="badge-row" id="badge-committee-2"></div>
+    <label>Your Name (HR member)</label>
+    <input id="hr-name" type="text" placeholder="e.g. Ahmed Ali">
+
+    <label>Your HR Code</label>
+    <input id="hr-code" type="text" placeholder="e.g. HR-001">
+
+    <button onclick="goPage2Next()">Next</button>
+    <button class="secondary" onclick="goToPage(1)">Back</button>
+  </div>
+
+  <!-- ===================== PAGE 3 — Scan ===================== -->
+  <div id="page-scan" class="page">
+    <div class="badge-row" id="badge-summary-3"></div>
+    <button onclick="startScan()" id="start-scan-btn">Start Scanning</button>
+    <button class="secondary" onclick="goToPage(2)">Back</button>
+    <div id="reader"></div>
+    <div id="scanned-card" class="scanned-card" style="display:none;">
+      <div class="name" id="scanned-name"></div>
+      <div class="meta" id="scanned-meta"></div>
+    </div>
+    <div id="result"></div>
+  </div>
 
   <script>
     // ====================================================================
@@ -38,6 +83,12 @@
     // شكله تقريبًا: https://script.google.com/macros/s/AKfycb.../exec
     // ====================================================================
     const API_URL = "https://script.google.com/macros/s/AKfycbyKiSjYQfa8zF5OfuSgYXknXtCbizrzQCdfe3R2E1K5-BxNtY9VRes6gJKce06PPicM/exec";
+
+    const SUBTITLES = {
+      1: "Step 1 of 3 — Committee &amp; Password",
+      2: "Step 2 of 3 — HR Operator Details",
+      3: "Step 3 of 3 — Scan",
+    };
 
     // نداء JSONP — بيتفادى مشكلة CORS تمامًا، وده الأسلوب اللي جوجل نفسها بتنصح
     // بيه للنداء على Apps Script من موقع تاني (مفيش fetch ولا headers خاصة).
@@ -63,7 +114,7 @@
 
         script.src = API_URL + "?" + qs;
         script.onerror = function () {
-          reject(new Error("معرفش يوصل لسيرفر جوجل (تأكد من رابط API_URL والنت)"));
+          reject(new Error("Could not reach the Google server (check API_URL and your internet connection)"));
           cleanup();
         };
         document.body.appendChild(script);
@@ -71,12 +122,12 @@
     }
 
     if (API_URL.indexOf("PASTE_YOUR") === 0) {
-      showResult(false, "لسه محدّدتش رابط الـ API — افتح ملف index.html وحط رابط Apps Script في متغير API_URL.");
+      showResult(false, "API link is not set yet — open index.html and put your Apps Script link in the API_URL variable.");
     } else {
       jsonp({ action: "getCommittees" })
         .then(populateCommittees)
         .catch(function (err) {
-          showResult(false, "معرفش أجيب قائمة اللجان: " + err.message);
+          showResult(false, "Could not load the committee list: " + err.message);
         });
     }
 
@@ -90,24 +141,35 @@
       });
     }
 
+    // ---- Shared state carried across the 3 pages ----
+    let state = {
+      committee: null,
+      committeeName: null,
+      password: null,
+      sessionId: null,
+      hrName: null,
+      hrCode: null,
+    };
     let scanner = null;
-    let currentSessionId = null;
 
-    function startScan() {
+    function goToPage(n) {
+      [1, 2, 3].forEach(function (i) {
+        document.getElementById("page-" + (i === 1 ? "login" : i === 2 ? "hr" : "scan")).classList.toggle("active", i === n);
+        document.getElementById("dot-" + i).classList.toggle("active", i <= n);
+      });
+      document.getElementById("subtitle-text").innerHTML = SUBTITLES[n];
+      hideResult();
+    }
+
+    // ---- Page 1 -> 2 : validate committee + password, auto-generate Session ID ----
+    function goPage1Next() {
       const committee = document.getElementById("committee").value;
       const password = document.getElementById("password").value;
       if (!committee || !password) {
-        showResult(false, "من فضلك اختار اللجنة واكتب الباسورد الأول.");
+        showResult(false, "Please choose the committee and type its password first.");
         return;
       }
-      if (scanner) return;
-
-      if (typeof Html5Qrcode === "undefined") {
-        showResult(false, "مكتبة قراءة الـ QR متحمّلتش من الإنترنت. تأكد إن عندك نت شغال، اعمل Refresh للصفحة، وجرب تاني.");
-        return;
-      }
-
-      showResult(true, "بيتحقق من الباسورد وبيحدد رقم الجلسة...");
+      showResult(true, "Checking password and preparing the session...");
 
       jsonp({ action: "startSession", committee: committee, password: password })
         .then(function (res) {
@@ -115,18 +177,66 @@
             showResult(false, res.message);
             return;
           }
-          currentSessionId = res.sessionId;
-          document.getElementById("session-id-label").textContent = currentSessionId;
-          document.getElementById("session-badge").style.display = "block";
-          openCamera_(committee, password);
+          state.committee = committee;
+          state.committeeName = document.getElementById("committee").selectedOptions[0].textContent;
+          state.password = password;
+          state.sessionId = res.sessionId;
+
+          document.getElementById("badge-committee-2").innerHTML =
+            "<div><b>Committee:</b> " + state.committeeName + "</div>" +
+            "<div><b>Session:</b> " + state.sessionId + " (auto-generated)</div>";
+
+          hideResult();
+          goToPage(2);
         })
         .catch(function (err) {
-          showResult(false, "معرفش يوصل لسيرفر جوجل: " + err.message);
+          showResult(false, "Could not reach the Google server: " + err.message);
         });
     }
 
-    function openCamera_(committee, password) {
-      showResult(true, "بيحاول يفتح الكاميرا... لو ظهرلك طلب إذن (Allow camera) دوس السماح.");
+    // ---- Page 2 -> 3 : validate the HR operator (must be an HR-committee member) ----
+    function goPage2Next() {
+      const hrName = document.getElementById("hr-name").value.trim();
+      const hrCode = document.getElementById("hr-code").value.trim();
+      if (!hrName || !hrCode) {
+        showResult(false, "Please enter your name and your HR code first.");
+        return;
+      }
+      showResult(true, "Confirming your HR code...");
+
+      jsonp({ action: "validateHrOperator", hrCode: hrCode })
+        .then(function (res) {
+          if (!res.ok) {
+            showResult(false, res.message);
+            return;
+          }
+          state.hrName = res.hrName; // the real name on file — used for the log, not the typed one
+          state.hrCode = res.hrCode;
+
+          document.getElementById("badge-summary-3").innerHTML =
+            "<div><b>Committee:</b> " + state.committeeName + "</div>" +
+            "<div><b>Session:</b> " + state.sessionId + "</div>" +
+            "<div><b>Scanning as (HR):</b> " + state.hrName + " (" + state.hrCode + ")</div>";
+
+          hideResult();
+          goToPage(3);
+        })
+        .catch(function (err) {
+          showResult(false, "Could not reach the Google server: " + err.message);
+        });
+    }
+
+    // ---- Page 3 : camera scanning ----
+    function startScan() {
+      if (scanner) return;
+
+      if (typeof Html5Qrcode === "undefined") {
+        showResult(false, "The QR-reading library did not load from the internet. Make sure you have a working connection, refresh the page, and try again.");
+        return;
+      }
+
+      document.getElementById("start-scan-btn").style.display = "none";
+      showResult(true, "Opening the camera... if a permission prompt appears, tap Allow.");
 
       scanner = new Html5Qrcode("reader");
       scanner.start(
@@ -136,37 +246,47 @@
           scanner.pause(true);
           jsonp({
             action: "recordAttendance",
-            committee: committee,
-            password: password,
+            committee: state.committee,
+            password: state.password,
             memberId: decodedText,
-            session: currentSessionId
+            session: state.sessionId,
+            hrCode: state.hrCode,
           })
             .then(function (res) {
               onScanResult(res);
               setTimeout(function () { try { scanner.resume(); } catch (e) {} }, 1500);
             })
             .catch(function (err) {
-              showResult(false, "حصل خطأ في الاتصال بالسيرفر: " + err.message);
+              showResult(false, "Connection error: " + err.message);
               setTimeout(function () { try { scanner.resume(); } catch (e) {} }, 1500);
             });
         }
       ).catch(function (err) {
         scanner = null;
+        document.getElementById("start-scan-btn").style.display = "block";
         var msg = String(err && err.message ? err.message : err);
         var extra = "";
         if (/NotAllowedError|Permission/i.test(msg)) {
-          extra = " — دوس على أيقونة القفل 🔒 أو (ⓘ) جنب رابط الصفحة فوق ← Permissions/الأذونات ← Camera ← اسمح (Allow)، وبعدين اعمل Refresh وجرب تاني.";
+          extra = " — tap the lock 🔒 or (ⓘ) icon next to the address bar above ← Permissions ← Camera ← Allow, then refresh and try again.";
         } else if (/NotFoundError|no camera/i.test(msg)) {
-          extra = " — مفيش كاميرا خلفية اتلاقت على الجهاز، جرب متصفح تاني أو جهاز تاني.";
+          extra = " — no back camera was found on this device, try another browser or device.";
         } else if (/NotReadableError/i.test(msg)) {
-          extra = " — يمكن الكاميرا شغالة في تطبيق تاني حاليًا، قفل أي تطبيق كاميرا مفتوح وجرب تاني.";
+          extra = " — the camera might be in use by another app right now, close any open camera app and try again.";
         }
-        showResult(false, "معرفش يفتح الكاميرا: " + msg + extra);
+        showResult(false, "Could not open the camera: " + msg + extra);
       });
     }
 
     function onScanResult(res) {
       showResult(res.ok, res.message);
+      const card = document.getElementById("scanned-card");
+      if (res.ok && res.memberName) {
+        document.getElementById("scanned-name").textContent = res.memberName;
+        document.getElementById("scanned-meta").textContent = res.memberCommittee + " — " + res.memberCode;
+        card.style.display = "block";
+      } else {
+        card.style.display = "none";
+      }
     }
 
     function showResult(ok, message) {
@@ -174,6 +294,11 @@
       el.style.display = "block";
       el.className = ok ? "ok" : "err";
       el.textContent = message;
+    }
+
+    function hideResult() {
+      document.getElementById("result").style.display = "none";
+      document.getElementById("scanned-card").style.display = "none";
     }
   </script>
 </body>
