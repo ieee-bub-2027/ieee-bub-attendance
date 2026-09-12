@@ -1,77 +1,22 @@
 <!DOCTYPE html>
 <html>
-
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>تسجيل الحضور — IEEE BUB</title>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      direction: rtl;
-      max-width: 480px;
-      margin: 20px auto;
-      padding: 0 12px;
-      color: #0A2036;
-    }
-
-    h2 {
-      text-align: center;
-    }
-
-    label {
-      display: block;
-      margin-top: 12px;
-      font-weight: bold;
-    }
-
-    input,
-    select {
-      width: 100%;
-      padding: 8px;
-      margin-top: 4px;
-      box-sizing: border-box;
-      font-size: 16px;
-    }
-
-    button {
-      width: 100%;
-      padding: 12px;
-      margin-top: 16px;
-      font-size: 16px;
-      background: #0A2036;
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-    }
-
-    #reader {
-      width: 100%;
-      margin-top: 16px;
-    }
-
-    #result {
-      margin-top: 14px;
-      padding: 10px;
-      border-radius: 6px;
-      font-weight: bold;
-      text-align: center;
-      display: none;
-    }
-
-    .ok {
-      background: #DFF5E1;
-      color: #1B6E2E;
-    }
-
-    .err {
-      background: #FBE1E1;
-      color: #A32020;
-    }
+    body { font-family: Arial, sans-serif; direction: rtl; max-width: 480px; margin: 20px auto; padding: 0 12px; color: #0A2036; }
+    h2 { text-align: center; }
+    label { display: block; margin-top: 12px; font-weight: bold; }
+    input, select { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; font-size: 16px; }
+    button { width: 100%; padding: 12px; margin-top: 16px; font-size: 16px; background: #0A2036; color: #fff; border: none; border-radius: 6px; }
+    #reader { width: 100%; margin-top: 16px; }
+    #result { margin-top: 14px; padding: 10px; border-radius: 6px; font-weight: bold; text-align: center; display: none; }
+    .ok { background: #DFF5E1; color: #1B6E2E; }
+    .err { background: #FBE1E1; color: #A32020; }
   </style>
 </head>
-
 <body>
   <h2>تسجيل الحضور</h2>
 
@@ -81,10 +26,8 @@
   <label>الباسورد الخاص باللجنة</label>
   <input id="password" type="text" placeholder="6 أرقام">
 
-  <label>اسم الجلسة</label>
-  <input id="session" type="text" placeholder="مثال: Session 5 - 12 Sep">
-
   <button onclick="startScan()">ابدأ المسح</button>
+  <div id="session-badge" style="display:none; margin-top:10px; text-align:center; font-size:13px; color:#0A2036;">الجلسة: <b id="session-id-label"></b></div>
   <div id="reader"></div>
   <div id="result"></div>
 
@@ -148,13 +91,13 @@
     }
 
     let scanner = null;
+    let currentSessionId = null;
 
     function startScan() {
       const committee = document.getElementById("committee").value;
       const password = document.getElementById("password").value;
-      const session = document.getElementById("session").value;
-      if (!committee || !password || !session) {
-        showResult(false, "من فضلك املأ اللجنة والباسورد واسم الجلسة الأول.");
+      if (!committee || !password) {
+        showResult(false, "من فضلك اختار اللجنة واكتب الباسورد الأول.");
         return;
       }
       if (scanner) return;
@@ -164,6 +107,25 @@
         return;
       }
 
+      showResult(true, "بيتحقق من الباسورد وبيحدد رقم الجلسة...");
+
+      jsonp({ action: "startSession", committee: committee, password: password })
+        .then(function (res) {
+          if (!res.ok) {
+            showResult(false, res.message);
+            return;
+          }
+          currentSessionId = res.sessionId;
+          document.getElementById("session-id-label").textContent = currentSessionId;
+          document.getElementById("session-badge").style.display = "block";
+          openCamera_(committee, password);
+        })
+        .catch(function (err) {
+          showResult(false, "معرفش يوصل لسيرفر جوجل: " + err.message);
+        });
+    }
+
+    function openCamera_(committee, password) {
       showResult(true, "بيحاول يفتح الكاميرا... لو ظهرلك طلب إذن (Allow camera) دوس السماح.");
 
       scanner = new Html5Qrcode("reader");
@@ -177,15 +139,15 @@
             committee: committee,
             password: password,
             memberId: decodedText,
-            session: session
+            session: currentSessionId
           })
             .then(function (res) {
               onScanResult(res);
-              setTimeout(function () { try { scanner.resume(); } catch (e) { } }, 1500);
+              setTimeout(function () { try { scanner.resume(); } catch (e) {} }, 1500);
             })
             .catch(function (err) {
               showResult(false, "حصل خطأ في الاتصال بالسيرفر: " + err.message);
-              setTimeout(function () { try { scanner.resume(); } catch (e) { } }, 1500);
+              setTimeout(function () { try { scanner.resume(); } catch (e) {} }, 1500);
             });
         }
       ).catch(function (err) {
@@ -215,5 +177,4 @@
     }
   </script>
 </body>
-
 </html>
