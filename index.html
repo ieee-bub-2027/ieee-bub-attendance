@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>تسجيل الحضور — IEEE BUB</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      direction: rtl;
+      max-width: 480px;
+      margin: 20px auto;
+      padding: 0 12px;
+      color: #0A2036;
+    }
+
+    h2 {
+      text-align: center;
+    }
+
+    label {
+      display: block;
+      margin-top: 12px;
+      font-weight: bold;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 8px;
+      margin-top: 4px;
+      box-sizing: border-box;
+      font-size: 16px;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 16px;
+      font-size: 16px;
+      background: #0A2036;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+    }
+
+    #reader {
+      width: 100%;
+      margin-top: 16px;
+    }
+
+    #result {
+      margin-top: 14px;
+      padding: 10px;
+      border-radius: 6px;
+      font-weight: bold;
+      text-align: center;
+      display: none;
+    }
+
+    .ok {
+      background: #DFF5E1;
+      color: #1B6E2E;
+    }
+
+    .err {
+      background: #FBE1E1;
+      color: #A32020;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>تسجيل الحضور</h2>
+
+  <label>اللجنة</label>
+  <select id="committee"></select>
+
+  <label>الباسورد الخاص باللجنة</label>
+  <input id="password" type="text" placeholder="6 أرقام">
+
+  <label>اسم الجلسة</label>
+  <input id="session" type="text" placeholder="مثال: Session 5 - 12 Sep">
+
+  <button onclick="startScan()">ابدأ المسح</button>
+  <div id="reader"></div>
+  <div id="result"></div>
+
+  <script>
+    // ====================================================================
+    // غيّر السطر ده بس: حط هنا رابط "تطبيق الويب" (Web app) اللي طلع لك من
+    // Apps Script بعد Deploy > New deployment > Web app.
+    // شكله تقريبًا: https://script.google.com/macros/s/AKfycb.../exec
+    // ====================================================================
+    const API_URL = "https://script.google.com/macros/s/AKfycbyKiSjYQfa8zF5OfuSgYXknXtCbizrzQCdfe3R2E1K5-BxNtY9VRes6gJKce06PPicM/exec";
+
+    // نداء JSONP — بيتفادى مشكلة CORS تمامًا، وده الأسلوب اللي جوجل نفسها بتنصح
+    // بيه للنداء على Apps Script من موقع تاني (مفيش fetch ولا headers خاصة).
+    function jsonp(params) {
+      return new Promise(function (resolve, reject) {
+        const cbName = "jsonp_cb_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+        const script = document.createElement("script");
+
+        window[cbName] = function (data) {
+          resolve(data);
+          cleanup();
+        };
+
+        function cleanup() {
+          delete window[cbName];
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        const qs = Object.keys(params)
+          .map(function (k) { return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]); })
+          .concat(["callback=" + cbName])
+          .join("&");
+
+        script.src = API_URL + "?" + qs;
+        script.onerror = function () {
+          reject(new Error("معرفش يوصل لسيرفر جوجل (تأكد من رابط API_URL والنت)"));
+          cleanup();
+        };
+        document.body.appendChild(script);
+      });
+    }
+
+    if (API_URL.indexOf("PASTE_YOUR") === 0) {
+      showResult(false, "لسه محدّدتش رابط الـ API — افتح ملف index.html وحط رابط Apps Script في متغير API_URL.");
+    } else {
+      jsonp({ action: "getCommittees" })
+        .then(populateCommittees)
+        .catch(function (err) {
+          showResult(false, "معرفش أجيب قائمة اللجان: " + err.message);
+        });
+    }
+
+    function populateCommittees(list) {
+      const sel = document.getElementById("committee");
+      list.forEach(function (c) {
+        const opt = document.createElement("option");
+        opt.value = c.code;
+        opt.textContent = c.code + " — " + c.name;
+        sel.appendChild(opt);
+      });
+    }
+
+    let scanner = null;
+
+    function startScan() {
+      const committee = document.getElementById("committee").value;
+      const password = document.getElementById("password").value;
+      const session = document.getElementById("session").value;
+      if (!committee || !password || !session) {
+        showResult(false, "من فضلك املأ اللجنة والباسورد واسم الجلسة الأول.");
+        return;
+      }
+      if (scanner) return;
+
+      if (typeof Html5Qrcode === "undefined") {
+        showResult(false, "مكتبة قراءة الـ QR متحمّلتش من الإنترنت. تأكد إن عندك نت شغال، اعمل Refresh للصفحة، وجرب تاني.");
+        return;
+      }
+
+      showResult(true, "بيحاول يفتح الكاميرا... لو ظهرلك طلب إذن (Allow camera) دوس السماح.");
+
+      scanner = new Html5Qrcode("reader");
+      scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        function (decodedText) {
+          scanner.pause(true);
+          jsonp({
+            action: "recordAttendance",
+            committee: committee,
+            password: password,
+            memberId: decodedText,
+            session: session
+          })
+            .then(function (res) {
+              onScanResult(res);
+              setTimeout(function () { try { scanner.resume(); } catch (e) { } }, 1500);
+            })
+            .catch(function (err) {
+              showResult(false, "حصل خطأ في الاتصال بالسيرفر: " + err.message);
+              setTimeout(function () { try { scanner.resume(); } catch (e) { } }, 1500);
+            });
+        }
+      ).catch(function (err) {
+        scanner = null;
+        var msg = String(err && err.message ? err.message : err);
+        var extra = "";
+        if (/NotAllowedError|Permission/i.test(msg)) {
+          extra = " — دوس على أيقونة القفل 🔒 أو (ⓘ) جنب رابط الصفحة فوق ← Permissions/الأذونات ← Camera ← اسمح (Allow)، وبعدين اعمل Refresh وجرب تاني.";
+        } else if (/NotFoundError|no camera/i.test(msg)) {
+          extra = " — مفيش كاميرا خلفية اتلاقت على الجهاز، جرب متصفح تاني أو جهاز تاني.";
+        } else if (/NotReadableError/i.test(msg)) {
+          extra = " — يمكن الكاميرا شغالة في تطبيق تاني حاليًا، قفل أي تطبيق كاميرا مفتوح وجرب تاني.";
+        }
+        showResult(false, "معرفش يفتح الكاميرا: " + msg + extra);
+      });
+    }
+
+    function onScanResult(res) {
+      showResult(res.ok, res.message);
+    }
+
+    function showResult(ok, message) {
+      const el = document.getElementById("result");
+      el.style.display = "block";
+      el.className = ok ? "ok" : "err";
+      el.textContent = message;
+    }
+  </script>
+</body>
+
+</html>
