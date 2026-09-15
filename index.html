@@ -605,6 +605,29 @@
     let summaryPollTimer = null; // v2.8: auto-refresh interval id while page-summary is showing
     let scanWatchTimer = null; // v2.8: lightweight "did someone else close this session?" check while page-scan is showing
 
+    // v2.8.2 FIX: keyed by the sanitized row id (safeIdPart_(code)) — a row
+    // is "dirty" from the moment its checkbox is toggled or its point value
+    // is typed, and stays dirty until a Save actually confirms it to the
+    // server. syncSummaryList() below refuses to overwrite a dirty row from
+    // a poll, no matter how long it's been checked. Before this, a row that
+    // was already checked+saved was treated as permanently "local wins" and
+    // NEVER synced again — so if a different HR operator later changed that
+    // same person's points, the device that saved it first kept showing its
+    // own stale number forever. Now a row is only protected while there is
+    // an actual unsaved edit sitting in it; once Save clears it, the row
+    // goes back to reflecting the sheet's current truth like any other.
+    let dirtyBonusCodes = {};
+
+    function onBonusCheckChange_(id, checkboxEl) {
+      const valEl = document.getElementById("bonus-val-" + id);
+      if (valEl) valEl.disabled = !checkboxEl.checked;
+      dirtyBonusCodes[id] = true;
+    }
+
+    function onBonusValueInput_(id) {
+      dirtyBonusCodes[id] = true;
+    }
+
     // v2.7: visibly flags the field(s) that actually caused a login error —
     // a red border + a short shake, removed automatically after it plays —
     // so a wrong password/code/name reads as "fix THIS", not as the page
@@ -932,8 +955,8 @@
         return '<div class="summary-row" data-code="' + escapeHtml(m.code) + '">' +
           '<div class="who"><div class="n">' + escapeHtml(m.name) + '</div><div class="c">' + escapeHtml(m.committee) + ' — ' + escapeHtml(m.code) + '</div></div>' +
           '<div class="bonus">' +
-            '<input type="checkbox" id="bonus-check-' + id + '" onchange="document.getElementById(\'bonus-val-' + id + '\').disabled = !this.checked;">' +
-            '<input type="number" id="bonus-val-' + id + '" placeholder="pts" min="0" step="1" disabled>' +
+            '<input type="checkbox" id="bonus-check-' + id + '" onchange="onBonusCheckChange_(\'' + id + '\', this)">' +
+            '<input type="number" id="bonus-val-' + id + '" placeholder="pts" min="0" step="1" disabled oninput="onBonusValueInput_(\'' + id + '\')">' +
           '</div>' +
         '</div>';
       }).join("");
@@ -1006,8 +1029,8 @@
             '<div class="summary-row" data-code="' + escapeHtml(m.code) + '">' +
               '<div class="who"><div class="n">' + escapeHtml(m.name) + '</div><div class="c">' + escapeHtml(m.committee) + ' — ' + escapeHtml(m.code) + '</div></div>' +
               '<div class="bonus">' +
-                '<input type="checkbox" id="bonus-check-' + id + '" onchange="document.getElementById(\'bonus-val-' + id + '\').disabled = !this.checked;">' +
-                '<input type="number" id="bonus-val-' + id + '" placeholder="pts" min="0" step="1" disabled>' +
+                '<input type="checkbox" id="bonus-check-' + id + '" onchange="onBonusCheckChange_(\'' + id + '\', this)">' +
+                '<input type="number" id="bonus-val-' + id + '" placeholder="pts" min="0" step="1" disabled oninput="onBonusValueInput_(\'' + id + '\')">' +
               '</div>' +
             '</div>'
           );
@@ -1023,17 +1046,30 @@
         }
 
         // An already-rendered row — never touch it if the operator's focus
-        // is on this SPECIFIC row's checkbox or value field right now.
+        // is on this SPECIFIC row's checkbox or value field right now
+        // (mid-tap/mid-keystroke protection).
         if (document.activeElement === checkEl || document.activeElement === valEl) return;
 
-        // Local edit already in progress (checkbox ticked, whether saved
-        // yet or not) — trust what's on screen, don't overwrite it from the
-        // server. Only surface the server's own value when this device
-        // hasn't touched this member's row at all.
-        if (!checkEl.checked && m.bonus > 0) {
+        // v2.8.2 FIX: a row with an unsaved local edit sitting in it (dirty)
+        // must not be overwritten by the server's older value. But a row
+        // that has ALREADY been saved (clean — no pending edit) must keep
+        // reflecting the sheet, even though its checkbox is checked, so
+        // that a LATER change by a different HR operator to the same
+        // person's points still shows up here. Before this fix, "checked"
+        // alone was (wrongly) treated as "never touch again."
+        if (dirtyBonusCodes[id]) { knownByCode[m.code] = m; return; }
+
+        if (m.bonus > 0) {
           checkEl.checked = true;
           valEl.disabled = false;
           valEl.value = m.bonus;
+        } else if (checkEl.checked) {
+          // Server has no bonus recorded for them and we have no pending
+          // local edit of our own — reflect that too instead of showing a
+          // stale checked box forever.
+          checkEl.checked = false;
+          valEl.value = "";
+          valEl.disabled = true;
         }
         knownByCode[m.code] = m;
       });
@@ -1157,6 +1193,7 @@
       if (!state.sessionMembers) return;
 
       const bonuses = [];
+      const sentIds = [];
       state.sessionMembers.forEach(function (m) {
         const id = safeIdPart_(m.code);
         const checkEl = document.getElementById("bonus-check-" + id);
@@ -1165,6 +1202,7 @@
           const val = parseFloat(valEl ? valEl.value : "");
           if (!isNaN(val) && val > 0) {
             bonuses.push({ code: m.code, name: m.name, points: val });
+            sentIds.push(id);
           }
         }
       });
@@ -1185,6 +1223,13 @@
             showSummaryStatus(false, res.message);
             return;
           }
+          // v2.8.2 FIX: only NOW, once the server has actually confirmed
+          // these exact points, do these rows stop being "dirty" — from
+          // this point on they'll keep syncing normally, so if another HR
+          // operator changes the same person's points later, this screen
+          // will pick that up on its next poll instead of showing this
+          // stale save forever.
+          sentIds.forEach(function (id) { delete dirtyBonusCodes[id]; });
           showSummaryStatus(true, t("savedPoints"));
           // v2.8: pull the sheet's own copy right back so this device's own
           // saved values line up with what everyone else's poll will show —
@@ -1239,6 +1284,7 @@
     function resetToStart(message) {
       stopSummaryAutoRefresh();
       stopScanWatch();
+      dirtyBonusCodes = {}; // don't let a stale dirty flag from this session block syncing that same member's row in the next one
       state.hrName = null;
       state.hrCode = null;
       state.committee = null;
