@@ -124,6 +124,20 @@
     }
     input::placeholder { color: var(--muted); opacity: 0.8; }
     input:focus, select:focus { outline: none; border-color: var(--brand-accent); box-shadow: 0 0 0 3px var(--focus-glow); }
+    /* v2.7: a wrong/missing field gets a visible red border + a short shake,
+       on top of the existing error text — so a mistake reads as "you did
+       something wrong here", not just as the system silently not moving on. */
+    input.field-error, select.field-error {
+      border-color: #D64545 !important;
+      box-shadow: 0 0 0 3px rgba(214, 69, 69, 0.22) !important;
+      animation: shakeField 0.4s ease;
+    }
+    @keyframes shakeField {
+      10%, 90% { transform: translateX(-1px); }
+      20%, 80% { transform: translateX(2px); }
+      30%, 50%, 70% { transform: translateX(-4px); }
+      40%, 60% { transform: translateX(4px); }
+    }
     button {
       width: 100%; padding: 12px; margin-top: 16px; font-size: 16px; font-weight: 600;
       background: linear-gradient(135deg, var(--btn-grad-1), var(--btn-grad-2)); color: #fff; border: none; border-radius: 10px; cursor: pointer;
@@ -174,6 +188,7 @@
     .summary-row .bonus input[type="checkbox"] { width: auto; margin: 0; }
     .summary-row .bonus input[type="number"] { width: 58px; margin: 0; padding: 4px; font-size: 14px; }
     .summary-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 0; }
+    .summary-autorefresh-note { text-align: center; color: var(--muted); font-size: 11px; margin-top: 10px; }
     .summary-retry { text-align: center; margin-top: 10px; }
     .summary-retry a { color: var(--brand-accent); font-weight: 600; cursor: pointer; text-decoration: underline; }
 
@@ -262,8 +277,20 @@
       <h2 style="margin-top:0;" data-i18n="sessionSummary">Session Summary</h2>
       <div class="summary-count" id="summary-count"></div>
       <div class="summary-list" id="summary-list"></div>
+      <!-- v2.8: another HR working the same still-open session on their own
+           device can add people (or bonuses) while this screen is sitting
+           idle — this list now re-pulls itself from the sheet on its own
+           every few seconds, without losing whatever bonus values are
+           already ticked here, so there's no button to remember to press. -->
+      <div class="summary-autorefresh-note" id="summary-autorefresh-note" data-i18n="autoUpdateNote">🔄 This list updates automatically every few seconds.</div>
       <div id="summary-status" style="margin-top:12px; padding:10px; border-radius:8px; font-weight:600; text-align:center; display:none;"></div>
-      <button onclick="submitBonusesAndClose()" data-i18n="saveClose">Save &amp; Close</button>
+      <!-- v2.8: Save and Close are now two separate, single-purpose buttons.
+           Save is the one that actually talks to the sheet — it writes the
+           bonus points and closes this session server-side, but leaves you
+           right here so you can see the result. Close is purely local: it
+           just clears this tab and goes back to page 1, no network call. -->
+      <button class="finish" id="summary-save-btn" onclick="saveBonuses()" data-i18n="saveBtn">💾 Save</button>
+      <button class="secondary" onclick="closeSummary()" data-i18n="closeBtn">✖ Close</button>
       <button class="secondary" onclick="goToPage(3)" data-i18n="backToScanning">Back to Scanning</button>
     </div>
   </div>
@@ -342,6 +369,18 @@
         savedCanClose: "Saved. You can close this tab now.",
         stillSavedAnyway: " — your attendance scans are already saved either way.",
         couldNotSaveBonuses: "Could not save (",
+        checkedInSuccess: "Checked in successfully",
+        savedClosingSession: "Saved — closing this session...",
+        readyForNewSession: "✅ Session saved and closed. Ready to start a new one.",
+        refreshList: "🔄 Refresh List",
+        refreshingList: "Refreshing from the sheet...",
+        listRefreshed: "List refreshed.",
+        saveBtn: "💾 Save",
+        closeBtn: "✖ Close",
+        savedStaysOpen: "✅ Saved to the sheet — this session is now closed. Tap Close when you're ready to start a new one.",
+        sessionNotClosedConfirm: "This session hasn't been saved/closed yet — leaving now keeps it open on the sheet. Continue without saving?",
+        readyNotSaved: "↩ Back to start. Note: that session was left open — it was not saved or closed.",
+        autoUpdateNote: "🔄 This list updates automatically every few seconds.",
       },
       ar: {
         seasonBadge: "IEEE BUB SB — 2026 – 2027 الموسم",
@@ -398,6 +437,18 @@
         savedCanClose: "تم الحفظ. تقدر تقفل التاب دلوقتي.",
         stillSavedAnyway: " — بيانات الحضور محفوظة بالفعل في الحالتين.",
         couldNotSaveBonuses: "تعذر الحفظ (",
+        checkedInSuccess: "تم تسجيل الحضور",
+        savedClosingSession: "تم الحفظ — جاري إنهاء هذه الجلسة...",
+        readyForNewSession: "✅ تم حفظ الجلسة وإغلاقها. جاهز تبدأ جلسة جديدة.",
+        refreshList: "🔄 تحديث القائمة",
+        refreshingList: "جاري التحديث من الشيت...",
+        listRefreshed: "تم تحديث القائمة.",
+        saveBtn: "💾 حفظ",
+        closeBtn: "✖ إغلاق",
+        savedStaysOpen: "✅ اتحفظ في الشيت — الجلسة دي بقت مقفولة دلوقتي. دوس إغلاق لما تكون جاهز تبدأ جلسة جديدة.",
+        sessionNotClosedConfirm: "الجلسة دي لسه ما اتحفظتش/ما اتقفلتش — لو خرجت دلوقتي هتفضل مفتوحة في الشيت. متأكد عايز تكمل من غير حفظ؟",
+        readyNotSaved: "↩ رجعت لأول صفحة. ملحوظة: الجلسة اللي فاتت فضلت مفتوحة — ما اتحفظتش ولا اتقفلتش.",
+        autoUpdateNote: "🔄 القايمة دي بتتحدث تلقائيًا كل كام ثانية.",
       },
     };
 
@@ -529,11 +580,33 @@
       sessionId: null,
       scannedCount: 0, // live, best-effort tally shown WHILE scanning only
       sessionMembers: null, // authoritative list fetched from the sheet when Finish is pressed
+      sessionSaved: false, // v2.8: true once Save has actually closed this session server-side
     };
     let scanner = null;
+    let summaryPollTimer = null; // v2.8: auto-refresh interval id while page-summary is showing
+
+    // v2.7: visibly flags the field(s) that actually caused a login error —
+    // a red border + a short shake, removed automatically after it plays —
+    // so a wrong password/code/name reads as "fix THIS", not as the page
+    // silently not responding to "Next".
+    function shakeField() {
+      for (let i = 0; i < arguments.length; i++) {
+        const el = document.getElementById(arguments[i]);
+        if (!el) continue;
+        el.classList.remove("field-error");
+        void el.offsetWidth; // restart the animation if it's already mid-shake
+        el.classList.add("field-error");
+        el.focus({ preventScroll: true });
+      }
+    }
+    function clearFieldError(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove("field-error");
+    }
 
     function goToPage(n) {
       currentStep = n;
+      stopSummaryAutoRefresh(); // v2.8: leaving (or never having been on) the summary page — no reason to keep polling
       document.getElementById("step-dots").style.display = "flex";
       document.getElementById("page-summary").classList.remove("active");
       [1, 2, 3].forEach(function (i) {
@@ -548,8 +621,11 @@
     function hrLoginNext() {
       const hrName = document.getElementById("hr-name").value.trim();
       const hrCode = document.getElementById("hr-code").value.trim();
+      clearFieldError("hr-name");
+      clearFieldError("hr-code");
       if (!hrName || !hrCode) {
         showResult(false, t("enterNameCode"));
+        shakeField(!hrName ? "hr-name" : null, !hrCode ? "hr-code" : null);
         return;
       }
       showResult(true, t("confirmingCode"));
@@ -558,6 +634,7 @@
         .then(function (res) {
           if (!res.ok) {
             showResult(false, res.message);
+            shakeField("hr-code"); // the code is the only thing this call actually checks
             return;
           }
           state.hrName = res.hrName; // the real name on file — used for the log, not the typed one
@@ -575,8 +652,11 @@
     function committeeNext() {
       const committee = document.getElementById("committee").value;
       const password = document.getElementById("password").value;
+      clearFieldError("committee");
+      clearFieldError("password");
       if (!committee || !password) {
         showResult(false, t("chooseCommitteePassword"));
+        shakeField(!committee ? "committee" : null, !password ? "password" : null);
         return;
       }
       showResult(true, t("checkingPassword"));
@@ -585,6 +665,7 @@
         .then(function (res) {
           if (!res.ok) {
             showResult(false, res.message);
+            shakeField("password"); // wrong/expired password is by far the most common cause here
             return;
           }
           state.committee = committee;
@@ -693,7 +774,13 @@
     // can never make the summary disagree with what's actually saved.
     function onScanResult(res) {
       if (res.ok && res.memberName) {
-        showResult(true, res.message, res.memberName, res.memberCommittee + " — " + res.memberCode);
+        // v2.7: res.message from the server already reads "Checked in: <name>
+        // — <committee> (<code>)" — showing it AND the name/committee row
+        // below it printed the same person's name twice in the same green
+        // box. Use one short, generic confirmation line instead; the
+        // name/committee/code row underneath is what actually carries the
+        // information now.
+        showResult(true, t("checkedInSuccess"), res.memberName, res.memberCommittee + " — " + res.memberCode);
         state.scannedCount++;
         updateScanCounter();
       } else {
@@ -727,7 +814,11 @@
       document.getElementById("page-summary").classList.add("active");
       updateSubtitle();
       document.getElementById("summary-status").style.display = "none";
+      state.sessionSaved = false;
+      const saveBtn = document.getElementById("summary-save-btn");
+      if (saveBtn) saveBtn.disabled = false;
       loadSessionSummary();
+      startSummaryAutoRefresh();
     }
 
     function loadSessionSummary() {
@@ -758,8 +849,26 @@
         });
     }
 
-    function renderSummary() {
+    // Reads whatever bonus checkboxes/values are currently ticked on screen,
+    // keyed by member code — so a re-render (language toggle, or the v2.7
+    // "Refresh List" button below) never throws away bonus points the HR
+    // already started entering, even if the list itself grew in the meantime.
+    function snapshotBonusInputs_() {
+      const snap = {};
+      if (!state.sessionMembers) return snap;
+      state.sessionMembers.forEach(function (m, i) {
+        const checkEl = document.getElementById("bonus-check-" + i);
+        const valEl = document.getElementById("bonus-val-" + i);
+        if (checkEl && checkEl.checked) {
+          snap[m.code] = valEl ? valEl.value : "";
+        }
+      });
+      return snap;
+    }
+
+    function renderSummary(preserved) {
       if (!state.sessionMembers) return; // still loading (or failed) — loadSessionSummary() already shows that state
+      if (!preserved) preserved = snapshotBonusInputs_(); // carries bonus entries through e.g. a language toggle too
       const list = document.getElementById("summary-list");
       const count = document.getElementById("summary-count");
       const n = state.sessionMembers.length;
@@ -779,10 +888,72 @@
           '</div>' +
         '</div>';
       }).join("");
+
+      state.sessionMembers.forEach(function (m, i) {
+        if (!preserved.hasOwnProperty(m.code)) return;
+        const checkEl = document.getElementById("bonus-check-" + i);
+        const valEl = document.getElementById("bonus-val-" + i);
+        if (checkEl) checkEl.checked = true;
+        if (valEl) { valEl.disabled = false; valEl.value = preserved[m.code]; }
+      });
     }
 
-    // ---- Save any marked bonus points + close out the session server-side, then close the tab ----
-    function submitBonusesAndClose() {
+    // v2.8: pulls the session's list fresh from the sheet again — for when
+    // another HR operator is scanning into this SAME still-open session on
+    // their own device (see finishSession/startSession: a session is shared
+    // by committee, not per-HR, until someone explicitly closes it) and this
+    // screen wants to catch whoever they've added since it first loaded.
+    // Anything already ticked here for bonus stays ticked. This used to be a
+    // manual "🔄 Refresh List" button; it now runs on its own on a timer
+    // (see startSummaryAutoRefresh below) instead of waiting for a tap, and
+    // stays quiet on screen (no status banner) so it doesn't interrupt
+    // someone mid-typing a bonus value — a failed tick just retries on the
+    // next one instead of surfacing an error every few seconds.
+    function startSummaryAutoRefresh() {
+      stopSummaryAutoRefresh(); // never stack two timers
+      summaryPollTimer = setInterval(function () {
+        if (document.hidden) return; // tab not in front — skip this tick, keep the interval alive for when it is
+        silentRefreshSummaryList();
+      }, 8000);
+    }
+
+    function stopSummaryAutoRefresh() {
+      if (summaryPollTimer) {
+        clearInterval(summaryPollTimer);
+        summaryPollTimer = null;
+      }
+    }
+
+    function silentRefreshSummaryList() {
+      if (!state.sessionId) return;
+      const preserved = snapshotBonusInputs_();
+      jsonp({
+        action: "getSessionAttendance",
+        committee: state.committee,
+        password: state.password,
+        hrCode: state.hrCode,
+        session: state.sessionId,
+      })
+        .then(function (res) {
+          if (!res.ok) return; // stay quiet on a transient failure — the next tick tries again
+          state.sessionMembers = res.members;
+          renderSummary(preserved);
+        })
+        .catch(function () {
+          // stay quiet here too — a real outage will already be obvious from
+          // the scanning screen itself, so this doesn't need its own alarm
+        });
+    }
+
+    // ---- v2.8: Save writes bonus points + closes the session server-side,
+    // and stays on this screen so you can see the result — it no longer
+    // navigates anywhere on its own. Close (below) is the separate, purely
+    // local action for that. finishSession on the backend is a one-time,
+    // terminal action (it appends the sheet's "session finished" closing
+    // row and refreshes the KPI stats), so once it succeeds the button is
+    // disabled and the auto-refresh stops — a second tap would otherwise
+    // leave a duplicate closing row in the log.
+    function saveBonuses() {
       if (!state.sessionMembers) return;
 
       const bonuses = [];
@@ -811,12 +982,54 @@
             showSummaryStatus(false, res.message + t("stillSavedAnyway"));
             return;
           }
-          showSummaryStatus(true, t("savedCanClose"));
-          setTimeout(function () { window.close(); }, 400);
+          state.sessionSaved = true;
+          stopSummaryAutoRefresh(); // the session is closed server-side now — nothing left to poll for
+          const saveBtn = document.getElementById("summary-save-btn");
+          if (saveBtn) saveBtn.disabled = true;
+          showSummaryStatus(true, t("savedStaysOpen"));
         })
         .catch(function (err) {
           showSummaryStatus(false, t("couldNotSaveBonuses") + err.message + ")" + t("stillSavedAnyway"));
         });
+    }
+
+    // ---- v2.8: Close is now its own, purely local button — no network
+    // call, it just clears this tab and lands back on page 1. If Save was
+    // never (successfully) pressed, this session is still open on the
+    // sheet, so it warns before leaving rather than silently abandoning it.
+    function closeSummary() {
+      if (state.sessionMembers && !state.sessionSaved) {
+        if (!confirm(t("sessionNotClosedConfirm"))) return;
+      }
+      resetToStart();
+    }
+
+    // v2.7: the one consistent landing spot after "Save & Close" — clears
+    // this browser tab's in-memory session state (the CLOSED session itself
+    // is untouched on the sheet) and returns to the very first screen.
+    function resetToStart() {
+      const wasSaved = state.sessionSaved; // read before it gets cleared below
+      stopSummaryAutoRefresh();
+      state.hrName = null;
+      state.hrCode = null;
+      state.committee = null;
+      state.committeeName = null;
+      state.password = null;
+      state.sessionId = null;
+      state.scannedCount = 0;
+      state.sessionMembers = null;
+      state.sessionSaved = false;
+      const hrNameEl = document.getElementById("hr-name");
+      const hrCodeEl = document.getElementById("hr-code");
+      const passwordEl = document.getElementById("password");
+      const manualEl = document.getElementById("manual-code");
+      if (hrNameEl) hrNameEl.value = "";
+      if (hrCodeEl) hrCodeEl.value = "";
+      if (passwordEl) passwordEl.value = "";
+      if (manualEl) manualEl.value = "";
+      document.getElementById("summary-status").style.display = "none";
+      goToPage(1);
+      showResult(true, wasSaved ? t("readyForNewSession") : t("readyNotSaved"));
     }
 
     function showSummaryStatus(ok, message) {
