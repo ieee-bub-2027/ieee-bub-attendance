@@ -874,16 +874,36 @@
         });
     }
 
+    // v2.8.1 FIX: rows used to be keyed by their plain array INDEX
+    // ("bonus-check-0", "bonus-check-1", ...) and every poll tick tore down
+    // and rebuilt the ENTIRE list via innerHTML — even if a preserved value
+    // was carried over correctly, replacing the actual DOM nodes while an
+    // operator had a checkbox/number field focused on a real phone could cut
+    // off mid-typing input, drop the on-screen keyboard, or leave a tap
+    // landing on a stale/detached element. On a live device with several
+    // people ticking boxes while the 4-second poll kept firing in the
+    // background, this is what actually erased points and made Save send
+    // nothing. Fixed by keying every row by the member's own CODE (stable
+    // across rebuilds and across the whole session) and, far more
+    // importantly, by never rebuilding an existing row's DOM node again
+    // after its first render — see syncSummaryList() below, which is what
+    // every poll tick and post-Save refresh now uses instead of a full
+    // renderSummary().
+    function safeIdPart_(code) {
+      return "c" + String(code).replace(/[^A-Za-z0-9_-]/g, "_");
+    }
+
     // Reads whatever bonus checkboxes/values are currently ticked on screen,
-    // keyed by member code — so a re-render (language toggle, or the v2.7
-    // "Refresh List" button below) never throws away bonus points the HR
-    // already started entering, even if the list itself grew in the meantime.
+    // keyed by member code — used only when doing a genuine full rebuild
+    // (first load, or a manual language toggle), so that rare rebuild still
+    // can't throw away bonus points already ticked.
     function snapshotBonusInputs_() {
       const snap = {};
       if (!state.sessionMembers) return snap;
-      state.sessionMembers.forEach(function (m, i) {
-        const checkEl = document.getElementById("bonus-check-" + i);
-        const valEl = document.getElementById("bonus-val-" + i);
+      state.sessionMembers.forEach(function (m) {
+        const id = safeIdPart_(m.code);
+        const checkEl = document.getElementById("bonus-check-" + id);
+        const valEl = document.getElementById("bonus-val-" + id);
         if (checkEl && checkEl.checked) {
           snap[m.code] = valEl ? valEl.value : "";
         }
@@ -891,6 +911,9 @@
       return snap;
     }
 
+    // Full rebuild — used ONLY for the very first load of this screen (and a
+    // manual language toggle). Never called on a timer, so it can never
+    // interrupt someone mid-tap/mid-typing.
     function renderSummary(preserved) {
       if (!state.sessionMembers) return; // still loading (or failed) — loadSessionSummary() already shows that state
       if (!preserved) preserved = snapshotBonusInputs_(); // carries bonus entries through e.g. a language toggle too
@@ -904,25 +927,26 @@
         return;
       }
 
-      list.innerHTML = state.sessionMembers.map(function (m, i) {
-        return '<div class="summary-row">' +
-          '<div class="who"><div class="n">' + m.name + '</div><div class="c">' + m.committee + ' — ' + m.code + '</div></div>' +
+      list.innerHTML = state.sessionMembers.map(function (m) {
+        const id = safeIdPart_(m.code);
+        return '<div class="summary-row" data-code="' + escapeHtml(m.code) + '">' +
+          '<div class="who"><div class="n">' + escapeHtml(m.name) + '</div><div class="c">' + escapeHtml(m.committee) + ' — ' + escapeHtml(m.code) + '</div></div>' +
           '<div class="bonus">' +
-            '<input type="checkbox" id="bonus-check-' + i + '" onchange="document.getElementById(\'bonus-val-' + i + '\').disabled = !this.checked;">' +
-            '<input type="number" id="bonus-val-' + i + '" placeholder="pts" min="0" step="1" disabled>' +
+            '<input type="checkbox" id="bonus-check-' + id + '" onchange="document.getElementById(\'bonus-val-' + id + '\').disabled = !this.checked;">' +
+            '<input type="number" id="bonus-val-' + id + '" placeholder="pts" min="0" step="1" disabled>' +
           '</div>' +
         '</div>';
       }).join("");
 
-      // v2.8: fill in each row's bonus value either from what THIS device has
-      // ticked-but-not-yet-saved (preserved — always wins, so a poll tick
-      // never clobbers something you're mid-typing), or otherwise from
-      // `m.bonus`, the value already saved on the sheet — which is how a
-      // point another HR operator saved on their own phone shows up here
+      // Fill in each row's bonus value either from what THIS device has
+      // ticked-but-not-yet-saved (preserved — always wins), or otherwise
+      // from `m.bonus`, the value already saved on the sheet — which is how
+      // a point another HR operator saved on their own phone shows up here
       // automatically, with nobody touching a refresh button.
-      state.sessionMembers.forEach(function (m, i) {
-        const checkEl = document.getElementById("bonus-check-" + i);
-        const valEl = document.getElementById("bonus-val-" + i);
+      state.sessionMembers.forEach(function (m) {
+        const id = safeIdPart_(m.code);
+        const checkEl = document.getElementById("bonus-check-" + id);
+        const valEl = document.getElementById("bonus-val-" + id);
         if (preserved.hasOwnProperty(m.code)) {
           if (checkEl) checkEl.checked = true;
           if (valEl) { valEl.disabled = false; valEl.value = preserved[m.code]; }
@@ -931,6 +955,90 @@
           if (valEl) { valEl.disabled = false; valEl.value = m.bonus; }
         }
       });
+    }
+
+    // v2.8.1: the safe, NON-destructive counterpart to renderSummary() —
+    // this is what every poll tick (and the post-Save refresh) actually
+    // calls now. It never tears down or recreates a row that already
+    // exists: it only (a) appends a brand-new row for a member this device
+    // hasn't seen yet, and (b) for an existing row, updates its checkbox/
+    // value in place — and ONLY if neither of those two specific inputs
+    // currently has focus, so a poll landing exactly while someone is
+    // mid-tap or mid-typing on THAT row never touches it (every other row
+    // still updates normally). This is also why state.sessionMembers is
+    // updated to the union of everyone seen so far, never replaced outright
+    // — Save always reads straight from these same, never-recreated DOM
+    // nodes.
+    function syncSummaryList(members) {
+      const list = document.getElementById("summary-list");
+      const count = document.getElementById("summary-count");
+      const n = members.length;
+      count.innerHTML = "<b>" + n + "</b>" + (n === 1 ? t("summaryCheckedIn1") : t("summaryCheckedInN"));
+
+      if (n === 0) {
+        if (!list.querySelector(".summary-row")) {
+          list.innerHTML = '<div class="summary-empty">' + t("noOneScanned") + '</div>';
+        }
+        return;
+      }
+
+      // First real member ever seen on this load — nothing to merge into yet,
+      // so this one call is allowed to do the normal full build.
+      if (!list.querySelector(".summary-row")) {
+        state.sessionMembers = members;
+        renderSummary();
+        return;
+      }
+
+      const knownByCode = {};
+      (state.sessionMembers || []).forEach(function (m) { knownByCode[m.code] = m; });
+
+      members.forEach(function (m) {
+        const id = safeIdPart_(m.code);
+        const checkEl = document.getElementById("bonus-check-" + id);
+        const valEl = document.getElementById("bonus-val-" + id);
+
+        if (!checkEl || !valEl) {
+          // A member this device hasn't rendered yet (someone else scanned
+          // them in after our last render) — append a brand-new row for
+          // them only; every existing row is left completely untouched.
+          list.insertAdjacentHTML("beforeend",
+            '<div class="summary-row" data-code="' + escapeHtml(m.code) + '">' +
+              '<div class="who"><div class="n">' + escapeHtml(m.name) + '</div><div class="c">' + escapeHtml(m.committee) + ' — ' + escapeHtml(m.code) + '</div></div>' +
+              '<div class="bonus">' +
+                '<input type="checkbox" id="bonus-check-' + id + '" onchange="document.getElementById(\'bonus-val-' + id + '\').disabled = !this.checked;">' +
+                '<input type="number" id="bonus-val-' + id + '" placeholder="pts" min="0" step="1" disabled>' +
+              '</div>' +
+            '</div>'
+          );
+          const newCheckEl = document.getElementById("bonus-check-" + id);
+          const newValEl = document.getElementById("bonus-val-" + id);
+          if (m.bonus > 0 && newCheckEl && newValEl) {
+            newCheckEl.checked = true;
+            newValEl.disabled = false;
+            newValEl.value = m.bonus;
+          }
+          knownByCode[m.code] = m;
+          return;
+        }
+
+        // An already-rendered row — never touch it if the operator's focus
+        // is on this SPECIFIC row's checkbox or value field right now.
+        if (document.activeElement === checkEl || document.activeElement === valEl) return;
+
+        // Local edit already in progress (checkbox ticked, whether saved
+        // yet or not) — trust what's on screen, don't overwrite it from the
+        // server. Only surface the server's own value when this device
+        // hasn't touched this member's row at all.
+        if (!checkEl.checked && m.bonus > 0) {
+          checkEl.checked = true;
+          valEl.disabled = false;
+          valEl.value = m.bonus;
+        }
+        knownByCode[m.code] = m;
+      });
+
+      state.sessionMembers = Object.keys(knownByCode).map(function (code) { return knownByCode[code]; });
     }
 
     // v2.8: pulls the session's list fresh from the sheet again — for when
@@ -965,9 +1073,14 @@
       }
     }
 
+    // v2.8.1 FIX: used to call renderSummary(preserved) here, which rebuilt
+    // the WHOLE list from scratch on every tick — see the note above
+    // syncSummaryList() for why that was actually erasing points on a real
+    // phone. Now calls the non-destructive merge instead, which is exactly
+    // as safe to run silently every few seconds since it can never disturb
+    // whatever row the operator currently has focused.
     function silentRefreshSummaryList() {
       if (!state.sessionId) return;
-      const preserved = snapshotBonusInputs_();
       jsonp({
         action: "getSessionAttendance",
         committee: state.committee,
@@ -981,8 +1094,7 @@
             handleSessionClosedRemotely();
             return;
           }
-          state.sessionMembers = res.members;
-          renderSummary(preserved);
+          syncSummaryList(res.members);
         })
         .catch(function () {
           // stay quiet here too — a real outage will already be obvious from
@@ -1045,10 +1157,12 @@
       if (!state.sessionMembers) return;
 
       const bonuses = [];
-      state.sessionMembers.forEach(function (m, i) {
-        const checkEl = document.getElementById("bonus-check-" + i);
+      state.sessionMembers.forEach(function (m) {
+        const id = safeIdPart_(m.code);
+        const checkEl = document.getElementById("bonus-check-" + id);
         if (checkEl && checkEl.checked) {
-          const val = parseFloat(document.getElementById("bonus-val-" + i).value);
+          const valEl = document.getElementById("bonus-val-" + id);
+          const val = parseFloat(valEl ? valEl.value : "");
           if (!isNaN(val) && val > 0) {
             bonuses.push({ code: m.code, name: m.name, points: val });
           }
